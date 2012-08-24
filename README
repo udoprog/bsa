@@ -1,0 +1,92 @@
+BSA - Bind Static Analyzer
+--------------------------
+
+bsa allows you to query and write test cases against a bind database without having
+to run a service.
+
+This project aims to give you programmatic access to cumbersome bind databases.
+
+It operates by reading your normal configuration (usually named.conf), parsing it's
+content and building a programmer friendly database out of it.
+This database can then easily be queried using the supplied tools.
+
+Limitations
+===========
+
+* Currently only does primitive lookups, any recursion _has_ to be explicit.
+* Slow parser (pyparsing).
+* Grammar currently only supports final zone files, but work in progress to add
+  support for more complex statements (time statements: 5w, 1h).
+  It will also be possible to plug in your own grammar to check records and
+  configuration that is generated from third party sources.
+
+Setup
+=====
+
+Dependencies includes:
+
+* ipaddr-py (http://code.google.com/p/ipaddr-py/)
+* pyparsing (http://pyparsing.wikispaces.com/)
+
+Then run:
+
+    python setup.py install
+
+Run
+===
+
+Run the command using an AST cache to speed up local testing.
+
+    mkdir cache
+    bsa -i /etc/bind/named.conf -C cache --log-level=INFO
+
+This will invoke an interactive shell which allows you to inspect the loaded
+database.
+
+Try running a test-suite.
+
+    #> bootstrap.execute("bsa.suites.check_ptr")
+
+Query the database manually.
+
+    #> b.q("example.com", view=["public"], record=["NS", "MX"])
+    #> b.query("example.com", view=["public"], record=["NS", "MX"])
+    #> b.iquery("example.com", view=["public"], record=["NS", "MX"])
+
+Write a test suite:
+
+    from bsa.utils import generate_soa_domains
+    from bsa.utils import generate_records
+    from bsa.utils import domain_in
+
+
+    def run(db, reporter):
+        """
+        Check all CNAMEs within the database that they actually point to something.
+
+        Decide which domains to check depending on available SOA records.
+        """
+
+        checked_zones = set(generate_soa_domains(db))
+
+        for rr in generate_records(db, 'CNAME'):
+            if not domain_in(rr.resolved_target, checked_zones):
+                continue
+
+            lookup = rr.resolved_target
+
+            if db.query(lookup, record=['A', 'NS', 'CNAME', 'PTR']):
+                continue
+
+            reporter.error(
+                "Missing target [A, NS, CNAME, PTR]: {0} ({1})".format(
+                    lookup, repr(rr)))
+
+And run it:
+
+    #> bsa /path/to/named.conf -m bsa.suites.my_test_suite --log-level=ERROR
+
+BUGS
+====
+
+Report bugs to http://github.com/udoprog/bsa
