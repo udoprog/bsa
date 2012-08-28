@@ -2,7 +2,6 @@ import os
 import sys
 import logging
 
-import pyparsing
 
 log = logging.getLogger(__name__)
 
@@ -159,7 +158,7 @@ class IncludeHandler(object):
 
         try:
             result = self.parser.parseString(file_contents, parseAll=True)
-        except pyparsing.ParseException:
+        except:
             logging.error("could not parse: {0}".format(path),
                     exc_info=sys.exc_info())
             raise

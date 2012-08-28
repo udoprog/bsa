@@ -10,7 +10,6 @@ except ImportError:
     import pickle
 
 from bsa.include_handler import IncludeHandler
-from bsa.zone import BindZone
 from bsa.zone import parse_zone
 
 
@@ -231,6 +230,29 @@ class BindConfig(object):
 
     def __repr__(self):
         return "<BindConfig (root)>"
+
+
+class BindZone(object):
+    def __init__(self, origin):
+        self.origin = origin
+        self.file = None
+        self.allow_update = list()
+
+    def update_attributes(self, section_ast):
+        for state, ident, args, section in section_ast:
+            if ident == "file":
+                self.file = state.build_path(args[0])
+                continue
+
+            if ident == "allow-update":
+                self.allow_update.extend(map(lambda (p, i, a, s): i, section))
+                continue
+
+    def __repr__(self):
+        return (
+            "<BindZone origin={self.origin} "
+            "file={self.file}>"
+        ).format(self=self)
 
 
 class BindView(BindConfig):

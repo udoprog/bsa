@@ -4,9 +4,10 @@ import logging
 import ipaddr
 import pyparsing as p
 
-from bsa.include_handler import IncludeHandler
-from bsa.include_handler import IncludeStack
 from bsa.utils import join_origin
+
+from bsa.include_handler import IncludeStack
+from bsa.include_handler import IncludeHandler
 
 log = logging.getLogger(__name__)
 
@@ -23,29 +24,6 @@ domain = p.Word(p.alphanums + "-_#.")
 number = p.Word(p.nums)
 
 
-class BindZone(object):
-    def __init__(self, origin):
-        self.origin = origin
-        self.file = None
-        self.allow_update = list()
-
-    def update_attributes(self, section_ast):
-        for state, ident, args, section in section_ast:
-            if ident == "file":
-                self.file = state.build_path(args[0])
-                continue
-
-            if ident == "allow-update":
-                self.allow_update.extend(map(lambda (p, i, a, s): i, section))
-                continue
-
-    def __repr__(self):
-        return (
-            "<BindZone origin={self.origin} "
-            "file={self.file}>"
-        ).format(self=self)
-
-
 class Record(object):
     __slots__ = (
         "label",
@@ -55,13 +33,31 @@ class Record(object):
         "path",
     )
 
+    VALID_CLASS_TYPES = set(["IN", "CH"])
+
+    DEFAULT_TTL = 3600 * 24
+    DEFAULT_CLASS_TYPE = "IN"
+
     record_type = None
-    grammar = None
 
     def __init__(self, label, ttl, class_type, origin, path):
-        self.label = label
-        self.ttl = ttl
-        self.class_type = class_type
+        if label is not None:
+            self.label = label
+        else:
+            self.label = ""
+
+        if ttl is not None:
+            self.ttl = ttl
+        else:
+            self.ttl = self.DEFAULT_TTL
+
+        if class_type is not None:
+            if class_type not in self.VALID_CLASS_TYPES:
+                raise ValueError("Invalid class type: {0}".format(class_type))
+            self.class_type = class_type
+        else:
+            self.class_type = self.DEFAULT_CLASS_TYPE
+
         self.path = path
 
         if not origin:
@@ -70,12 +66,12 @@ class Record(object):
             self.origin = origin
 
     def __eq__(self, o):
-        return self.__key__() == o.__key__()
+        return self.__full_key__() == o.__full_key__()
 
     def __hash__(self):
-        return hash(self.__key__())
+        return hash(self.__full_key__())
 
-    def __key__(self):
+    def __full_key__(self):
         return (
             self.label,
             self.ttl,
@@ -123,7 +119,6 @@ class A(Record):
     )
 
     record_type = "A"
-    grammar = ipv4
 
     def __init__(self, args, address):
         self.address = address
@@ -157,11 +152,10 @@ class TXT(Record):
     )
 
     record_type = "TXT"
-    grammar = p.Group(p.ZeroOrMore(p.QuotedString('"')))
 
     str_fmt = '"{0}"'.format
 
-    def __init__(self, args, labels):
+    def __init__(self, args, *labels):
         self.labels = tuple(labels)
         super(TXT, self).__init__(*args)
 
@@ -189,7 +183,6 @@ class NS(Record):
     )
 
     record_type = "NS"
-    grammar = domain
 
     def __init__(self, args, target):
         self.target = target
@@ -228,7 +221,6 @@ class MX(Record):
     )
 
     record_type = "MX"
-    grammar = number + domain
 
     def __init__(self, args, priority, target):
         self.priority = priority
@@ -272,7 +264,6 @@ class SRV(Record):
     )
 
     record_type = "SRV"
-    grammar = number + number + number + domain
 
     def __init__(self, args, priority, weight, port, target):
         self.priority = priority
@@ -331,7 +322,6 @@ class CNAME(Record):
     )
 
     record_type = "CNAME"
-    grammar = domain
 
     def __init__(self, args, target):
         self.target = target
@@ -369,7 +359,6 @@ class PTR(Record):
     )
 
     record_type = "PTR"
-    grammar = domain
 
     def __init__(self, args, target):
         self.target = target
@@ -401,20 +390,40 @@ class SOA(Record):
     __slots__ = (
         "primary",
         "mail",
-        "serials",
+        "serial",
+        "refresh",
+        "retry",
+        "expire",
+        "minimum",
     )
 
     record_type = "SOA"
-    grammar = domain + domain + p.nestedExpr("(", ")", p.And([number] * 5))
 
-    def __init__(self, args, primary, mail, serials):
+    def __init__(self, args, primary, mail,
+            serial, refresh, retry, expire, minimum):
         self.primary = primary
         self.mail = mail
-        self.serials = tuple(serials)
+        self.serial = serial
+        self.refresh = refresh
+        self.retry = retry
+        self.expire = expire
+        self.minimum = minimum
         super(SOA, self).__init__(*args)
 
+    @property
+    def numbers(self):
+        return self.serial, self.refresh, self.retry, self.expire, self.minimum
+
+    @numbers.setter
+    def set_numbers(self, numbers):
+        (self.serial,
+         self.refresh,
+         self.retry,
+         self.expire,
+         self.minimum) = numbers
+
     def __key__(self):
-        return (self.primary, self.mail, self.serials)
+        return (self.primary, self.mail, self.numbers)
 
     @property
     def resolved_primary(self):
@@ -424,28 +433,27 @@ class SOA(Record):
         return (
             self.primary,
             self.mail,
-            "({0})".format(" ".join(map(str, self.serials)))
+            "({0})".format(" ".join(map(str, self.numbers)))
         )
 
     def origin_values(self):
         return (
             self.resolved_primary,
             self.mail,
-            "({0})".format(" ".join(map(str, self.serials))),
+            "({0})".format(" ".join(map(str, self.numbers))),
         )
 
     def __getstate__(self):
         parent_state = super(SOA, self).__getstate__()
-        return (self.primary, self.mail, self.serials, parent_state)
+        return (self.primary, self.mail, self.numbers, parent_state)
 
     def __setstate__(self, state):
-        (self.primary, self.mail, self.serials, parent_state) = state
+        (self.primary, self.mail, self.numbers, parent_state) = state
         super(SOA, self).__setstate__(parent_state)
 
 
 class AFSDB(Record):
     record_type = "AFSDB"
-    grammar = number + domain
 
     def __init__(self, args, priority, target):
         self.priority = priority
@@ -482,7 +490,7 @@ class RecordBuilder(IncludeStack):
     according to grammar.
     """
     def __init__(self, path, origin, records):
-        self.previous_label = origin
+        self.previous_label = None
         self.ttl = 3600 * 24
 
         self.records = dict(map(lambda r: (r.record_type, r), records))
@@ -490,25 +498,23 @@ class RecordBuilder(IncludeStack):
         # Maintain a stack of all traversed paths and origins.
         self.stack = [(path, origin)]
 
-    def update_origin(self, s, l, t):
+    def update_origin(self, origin):
         path, _ = self.stack[-1]
-        self.stack[-1] = (path, t[0])
+        self.stack[-1] = (path, origin)
         return []
 
-    def update_ttl(self, s, l, t):
-        self.ttl = int(t[0])
+    def update_ttl(self, ttl):
+        self.ttl = ttl
         return []
 
-    def build_name_record(self, s, l, t):
-        if len(t) == 4:
-            label, ttl, class_type, (record_type, record) = t
-        else:
-            ttl, class_type, (record_type, record) = t
-            label = None
+    def build_name_record(self, record):
+        label, ttl, class_type, (record_type, record) = record
 
         path, origin = self.stack[-1]
 
-        if label is None:
+        if not label:
+            if not self.previous_label:
+                raise ValueError("No previous label")
             label = self.previous_label
         else:
             self.previous_label = label
@@ -539,99 +545,198 @@ class RecordBuilder(IncludeStack):
         return path
 
 
-def build_record_parser(R):
-    """
-    Used to dynamically build records for each record type.
-    """
+class ZoneParser(object):
+    PRAGMA = "P"
+    RECORD = "R"
 
-    record = p.Group(p.Keyword(R.record_type) + p.Group(R.grammar))
-    return record
+    def __init__(self, path,
+                 origin=None,
+                 fake_dir=None,
+                 custom_records=[],
+                 file_reader=None):
 
+        self.path = path
+        self.origin = origin
+        self.fake_dir = fake_dir
+        self.records = [A, CNAME, PTR, TXT, NS, MX, SRV, AFSDB, SOA]
+        self.records += custom_records
+        self.record_names = set(r.record_type for r in self.records)
+        self.rb = RecordBuilder(path, origin, self.records)
 
-def build_parser(
-        path,
-        origin=".",
-        fake_dir=None,
-        file_reader=None,
-        custom_records=[]):
-    """
-    Build a zone file parser using pyparsing.
+        self.include_handler = IncludeHandler(
+            path,
+            self,
+            fake_dir=fake_dir,
+            file_reader=file_reader)
 
-    The default parser will completely ignore whitespace unless specified in
-    the match pattern.
-    """
+        self.whitespace = "\t\r "
+        self.newline = "\n"
 
-    # root grammar
-    root = p.Forward()
+    @classmethod
+    def yield_file_characters(cls, f):
+        while True:
+            buf = f.read(4096)
 
-    records = [A, CNAME, PTR, TXT, NS, MX, SRV, AFSDB, SOA]
-    records += custom_records
+            if not buf:
+                return
 
-    rb = RecordBuilder(path, origin, records)
+            for c in buf:
+                yield c
 
-    if fake_dir is None:
-        fake_dir = os.getcwd()
+    def zone_tokenizer(self, generator):
+        collected = ""
 
-    def convert_bool(s, l, t):
-        if t[0].lower() in ["yes", "true"]:
-            return True
-        return False
+        quoted = False
+        multiline = False
+        comment = False
+        escape = False
+        first = False
 
-    def convert_number(s, l, t):
-        return int(t[0])
+        for c in generator:
+            if first:
+                first = False
+                if c in self.whitespace:
+                    yield ""
+                    continue
 
-    include_handler = IncludeHandler(
-        path,
-        root,
-        fake_dir=fake_dir,
-        file_reader=file_reader,
-        stack=rb)
+            if c in self.newline:
+                comment = False
+                quoted = False
 
-    number = p.Word(p.nums)
+                if collected:
+                    yield collected
 
-    comment = p.Literal(";") + p.restOfLine
+                if not multiline:
+                    first = True
+                    yield None
 
-    path = p.Word(p.alphanums + "._/-")
+                collected = ""
+                continue
 
-    include = p.Keyword("$INCLUDE").suppress() + path
-    origin = p.Keyword("$ORIGIN").suppress() + domain
-    ttl = p.Keyword("$TTL").suppress() + number
+            if escape:
+                collected += c
+                escape = False
+                continue
 
-    record = p.Or(map(build_record_parser, records))
+            if c == ';':
+                comment = True
+                continue
 
-    class_type = p.Keyword("IN") | p.Keyword("CH")
+            if comment:
+                continue
 
-    name_spec = domain | p.Keyword("@") | p.Keyword("*")
+            if not quoted and c in self.whitespace:
+                if collected:
+                    yield collected
+                    collected = ""
 
-    value_spec = p.Optional(number, default=None) + \
-                 p.Optional(class_type, default="IN") + \
-                 record
+                continue
 
-    name_record = name_spec + value_spec \
-                | value_spec
+            if c == '\\':
+                escape = True
+                continue
 
-    name_record.setParseAction(rb.build_name_record)
+            if c == '"':
+                quoted = not quoted
+                continue
 
-    statement = include \
-              | origin \
-              | ttl \
-              | name_record
+            if c == '(':
+                multiline = True
+                continue
 
-    root << p.ZeroOrMore(statement + p.LineEnd().suppress())
+            if c == ')':
+                multiline = False
+                continue
 
-    number.setParseAction(convert_number)
-    ipv4.setParseAction(convert_ipv4)
-    origin.setParseAction(rb.update_origin)
-    ttl.setParseAction(rb.update_ttl)
-    include.setParseAction(include_handler)
+            collected += c
 
-    root.ignore(comment)
+        if collected:
+            yield collected
+            yield None
 
-    return root
+    def generate_lines(self, generator):
+        collected = []
+
+        for t in self.zone_tokenizer(generator):
+            if t is None:
+                if collected:
+                    yield tuple(collected)
+                    collected = []
+                continue
+
+            collected.append(t)
+
+    def parse_generator(self, generator):
+        result = list()
+
+        for line in self.generate_lines(generator):
+            t, val = self.parse_zone_line(line)
+
+            if t == self.PRAGMA:
+                result.extend(self.handle_pragma(val))
+                continue
+
+            record = self.rb.build_name_record(val)
+
+            result.append(record)
+
+        return result
+
+    def parse_zone_line(self, line):
+        l = line
+
+        if l[0].startswith("$"):
+            return self.PRAGMA, tuple(l)
+
+        if l[1] in self.record_names:
+            return self.RECORD, (l[0], None, None, (l[1], l[2:]))
+
+        if l[2] in self.record_names:
+            if l[1] in Record.VALID_CLASS_TYPES:
+                return self.RECORD, (l[0], None, l[1], (l[2], l[3:]))
+            return self.RECORD, (l[0], int(l[1]), None, (l[2], l[3:]))
+
+        if l[3] in self.record_names:
+            if l[2] in Record.VALID_CLASS_TYPES:
+                return self.RECORD, (l[0], int(l[1]), l[2], (l[3], l[4:]))
+
+            if l[1] in Record.VALID_CLASS_TYPES:
+                return self.RECORD, (l[0], int(l[2]), l[1], (l[3], l[4:]))
+
+        raise ValueError("Cannot handle: {0}".format(line))
+
+    def handle_pragma(self, val):
+        name = val[0]
+
+        if name == "$ORIGIN":
+            self.rb.update_origin(val[1])
+            return []
+
+        if name == "$TTL":
+            self.rb.update_ttl(int(val[1]))
+            return []
+
+        if name == "$INCLUDE":
+            return self.include_handler(None, None, val)
+
+        raise ValueError(val)
+
+    def parse_file(self, path):
+        with open(path) as f:
+            generator = self.yield_file_characters(f)
+            return self.parse_generator(generator)
+
+    def parse_string(self, string):
+        generator = (c for c in string)
+        return self.parse_generator(generator)
+
+    def parseString(self, string):
+        return self.parse_string(string)
 
 
 def parse_zone(path, origin, fake_dir=None):
     if fake_dir is None:
         fake_dir = os.getcwd()
-    parser = build_parser(path, origin, fake_dir)
-    return parser.parseFile(path, parseAll=True)
+
+    parser = ZoneParser(path, origin, fake_dir)
+    return parser.parse_file(path)
