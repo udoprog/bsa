@@ -20,8 +20,15 @@ Limitations
   It will also be possible to plug in your own grammar to check records and
   configuration that is generated from third party sources.
 
-Setup
-=====
+Installation
+============
+
+Install using pip:
+
+    pip install bsa
+
+Manual Setup
+============
 
 Dependencies includes:
 
