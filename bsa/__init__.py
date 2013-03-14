@@ -9,7 +9,7 @@ from bsa.named import BindConfig
 
 LOGGING_FORMAT = "%(levelname)-7s %(asctime)s [%(name)20s] %(message)s"
 
-__version__ = '0.2.0'
+__version__ = '0.2.1'
 
 
 class DefaultReporter(object):

@@ -47,6 +47,6 @@ ZONE1_EXPECTED = [
 
 class TestZoneParser(unittest.TestCase):
     def test_1(self):
-        parser = ZoneParser("test.zone")
-        for ref, actual in zip(ZONE1_EXPECTED, parser.parseString(ZONE1)):
+        parser = ZoneParser("test.zone", ".")
+        for ref, actual in zip(ZONE1_EXPECTED, parser.parse_string(ZONE1)):
             self.assertEquals(ref, actual)

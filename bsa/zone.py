@@ -605,8 +605,8 @@ class ZoneParser(object):
 
     def __init__(self,
                  path,
+                 origin,
                  root_directory=None,
-                 origin=None,
                  fake_root=None,
                  custom_records=[],
                  file_reader=None):
@@ -828,8 +828,8 @@ def parse_zone(path, origin, fake_root=None, root_directory=None,
 
     parser = ZoneParser(
         path,
+        origin,
         root_directory=root_directory,
-        origin=origin,
         fake_root=fake_root,
         file_reader=file_reader)
 

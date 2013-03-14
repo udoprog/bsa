@@ -1,0 +1,23 @@
+Source: python-bsa
+Priority: extra
+Maintainer: John-John Tedro <johnjohn.tedro@gmail.com>
+Standards-Version: 3.7.3
+Section: main
+Build-depends:
+ debhelper (>= 7),
+ python (>= 2.6.6-3~),
+ python-setuptools,
+ python-ipaddr,
+ python-argparse,
+ python-pyparsing
+X-Python-Version: >= 2.6
+
+Package: python-bsa
+Architecture: all
+Depends:
+ ${misc:Depends},
+ ${python:Depends},
+ python-ipaddr,
+ python-pyparsing,
+ python-argparse
+Description: bind static analyzer for unit testing named configurations.
