@@ -5,11 +5,31 @@ import ipaddr
 import pyparsing as p
 
 from bsa.utils import join_origin
+from bsa.utils import default_file_reader
 
 from bsa.include_handler import IncludeStack
 from bsa.include_handler import IncludeHandler
 
 log = logging.getLogger(__name__)
+
+
+TIME_FACTORS = {
+    'w': 3600 * 24 * 7,
+    'd': 3600 * 24,
+    'h': 3600,
+    'm': 60,
+}
+
+
+def to_time(s):
+    last_character = s[-1].lower()
+
+    factor = TIME_FACTORS.get(last_character)
+
+    if factor:
+        return int(s[:1]) * factor
+
+    return int(s)
 
 
 def convert_ipv4(s, l, t):
@@ -83,12 +103,12 @@ class Record(object):
     def __repr__(self):
         return (
             "<{self.record_type} "
-                "\"{self.label}\" "
-                "path={self.path} "
-                "origin={self.origin} "
-                "ttl={self.ttl} "
-                "class_type={self.class_type} "
-                "values={values}"
+            "\"{self.label}\" "
+            "path={self.path} "
+            "origin={self.origin} "
+            "ttl={self.ttl} "
+            "class_type={self.class_type} "
+            "values={values}"
             ">"
         ).format(self=self, values=self.values())
 
@@ -144,6 +164,39 @@ class A(Record):
     def __setstate__(self, state):
         (self.address, parent_state) = state
         super(A, self).__setstate__(parent_state)
+
+
+class AAAA(Record):
+    __slots__ = (
+        "address",
+    )
+
+    record_type = "AAAA"
+
+    def __init__(self, args, address):
+        self.address = address
+        super(AAAA, self).__init__(*args)
+
+    def __key__(self):
+        return (self.address,)
+
+    def values(self):
+        return (
+            self.address,
+        )
+
+    def origin_values(self):
+        return (
+            self.address,
+        )
+
+    def __getstate__(self):
+        parent_state = super(AAAA, self).__getstate__()
+        return (self.address, parent_state)
+
+    def __setstate__(self, state):
+        (self.address, parent_state) = state
+        super(AAAA, self).__setstate__(parent_state)
 
 
 class TXT(Record):
@@ -400,7 +453,7 @@ class SOA(Record):
     record_type = "SOA"
 
     def __init__(self, args, primary, mail,
-            serial, refresh, retry, expire, minimum):
+                 serial, refresh, retry, expire, minimum):
         self.primary = primary
         self.mail = mail
         self.serial = serial
@@ -499,7 +552,8 @@ class RecordBuilder(IncludeStack):
         self.stack = [(path, origin)]
 
     def update_origin(self, origin):
-        path, _ = self.stack[-1]
+        path, previous_origin = self.stack[-1]
+        origin = join_origin(origin, previous_origin)
         self.stack[-1] = (path, origin)
         return []
 
@@ -549,25 +603,38 @@ class ZoneParser(object):
     PRAGMA = "P"
     RECORD = "R"
 
-    def __init__(self, path,
+    def __init__(self,
+                 path,
+                 root_directory=None,
                  origin=None,
-                 fake_dir=None,
+                 fake_root=None,
                  custom_records=[],
                  file_reader=None):
 
+        if root_directory is None:
+            self.root_directory = os.path.dirname(path)
+        else:
+            self.root_directory = root_directory
+
+        if file_reader is None:
+            self.file_reader = default_file_reader
+        else:
+            self.file_reader = file_reader
+
         self.path = path
         self.origin = origin
-        self.fake_dir = fake_dir
-        self.records = [A, CNAME, PTR, TXT, NS, MX, SRV, AFSDB, SOA]
+        self.records = [A, AAAA, CNAME, PTR, TXT, NS, MX, SRV, AFSDB, SOA]
         self.records += custom_records
         self.record_names = set(r.record_type for r in self.records)
         self.rb = RecordBuilder(path, origin, self.records)
 
         self.include_handler = IncludeHandler(
+            self.root_directory,
             path,
             self,
-            fake_dir=fake_dir,
-            file_reader=file_reader)
+            fake_root=fake_root,
+            file_reader=self.file_reader,
+            stack=self.rb)
 
         self.whitespace = "\t\r "
         self.newline = "\n"
@@ -688,20 +755,20 @@ class ZoneParser(object):
         if l[0].startswith("$"):
             return self.PRAGMA, tuple(l)
 
-        if l[1] in self.record_names:
+        if len(l) >= 2 and l[1] in self.record_names:
             return self.RECORD, (l[0], None, None, (l[1], l[2:]))
 
-        if l[2] in self.record_names:
+        if len(l) >= 3 and l[2] in self.record_names:
             if l[1] in Record.VALID_CLASS_TYPES:
                 return self.RECORD, (l[0], None, l[1], (l[2], l[3:]))
-            return self.RECORD, (l[0], int(l[1]), None, (l[2], l[3:]))
+            return self.RECORD, (l[0], to_time(l[1]), None, (l[2], l[3:]))
 
-        if l[3] in self.record_names:
+        if len(l) >= 4 and l[3] in self.record_names:
             if l[2] in Record.VALID_CLASS_TYPES:
-                return self.RECORD, (l[0], int(l[1]), l[2], (l[3], l[4:]))
+                return self.RECORD, (l[0], to_time(l[1]), l[2], (l[3], l[4:]))
 
             if l[1] in Record.VALID_CLASS_TYPES:
-                return self.RECORD, (l[0], int(l[2]), l[1], (l[3], l[4:]))
+                return self.RECORD, (l[0], to_time(l[2]), l[1], (l[3], l[4:]))
 
         raise ValueError("Cannot handle: {0}".format(line))
 
@@ -717,26 +784,53 @@ class ZoneParser(object):
             return []
 
         if name == "$INCLUDE":
-            return self.include_handler(None, None, val)
+            path = val[1]
+            return self.include_handler.include(path)
+
+        if name == "$GENERATE":
+            return self.handle_generate(*val[1:])
 
         raise ValueError(val)
 
-    def parse_file(self, path):
-        with open(path) as f:
-            generator = self.yield_file_characters(f)
-            return self.parse_generator(generator)
+    def handle_generate(self, range_specifier, *rest):
+        records = list()
+
+        if '-' not in range_specifier:
+            raise ValueError("invalid range: {0}".format(range_specifier))
+
+        from_range, to_range = range_specifier.split('-')
+        from_range, to_range = int(from_range), int(to_range)
+
+        for i in range(from_range, to_range + 1):
+            current_rest = map(lambda s: str(i) if s == '$' else s, rest)
+            t, val = self.parse_zone_line(current_rest)
+            records.append(self.rb.build_name_record(val))
+
+        return records
+
+    def parse_path(self, path):
+        with self.file_reader(self.root_directory, path) as f:
+            return self.parse_file(f)
+
+    def parse_file(self, f):
+        generator = self.yield_file_characters(f)
+        return self.parse_generator(generator)
 
     def parse_string(self, string):
         generator = (c for c in string)
         return self.parse_generator(generator)
 
-    def parseString(self, string):
-        return self.parse_string(string)
 
+def parse_zone(path, origin, fake_root=None, root_directory=None,
+               file_reader=None):
+    if fake_root is None:
+        fake_root = os.getcwd()
 
-def parse_zone(path, origin, fake_dir=None):
-    if fake_dir is None:
-        fake_dir = os.getcwd()
+    parser = ZoneParser(
+        path,
+        root_directory=root_directory,
+        origin=origin,
+        fake_root=fake_root,
+        file_reader=file_reader)
 
-    parser = ZoneParser(path, origin, fake_dir)
-    return parser.parse_file(path)
+    return parser.parse_path(path)

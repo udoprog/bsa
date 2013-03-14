@@ -1,4 +1,5 @@
 import ipaddr
+import contextlib
 
 
 def reversed_address(address):
@@ -61,3 +62,9 @@ def generate_records(db, record_type):
 def generate_soa_domains(db):
     for rr in generate_records(db, 'SOA'):
         yield rr.resolved_label
+
+
+@contextlib.contextmanager
+def default_file_reader(root_directory, path):
+    with open(path) as f:
+        yield f

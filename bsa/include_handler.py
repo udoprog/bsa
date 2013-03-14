@@ -2,11 +2,13 @@ import os
 import sys
 import logging
 
+from bsa.utils import default_file_reader
+
 
 log = logging.getLogger(__name__)
 
 
-def build_path(path, last_path, root, fake_dir):
+def build_path(root_directory, path, last_path, fake_root):
     """
     There are three ways to build an inclusion path.
 
@@ -19,12 +21,12 @@ def build_path(path, last_path, root, fake_dir):
 
     if os.path.isabs(path):
         return os.path.join(
-            root,
+            root_directory,
             os.path.relpath(
                 path,
-                fake_dir))
+                fake_root))
 
-    from_root = os.path.join(root, path)
+    from_root = os.path.join(root_directory, path)
 
     # if path directly in root directory
     if os.path.isfile(from_root):
@@ -42,15 +44,16 @@ class IncludeState(object):
     supply some late functionality.
     """
 
-    __slots__ = ("last_path", "root", "fake_dir")
+    __slots__ = ("root_directory", "last_path", "fake_root")
 
-    def __init__(self, last_path, root, fake_dir):
+    def __init__(self, root_directory, last_path, fake_root):
+        self.root_directory = root_directory
         self.last_path = last_path
-        self.root = root
-        self.fake_dir = fake_dir
+        self.fake_root = fake_root
 
     def build_path(self, path):
-        return build_path(path, self.last_path, self.root, self.fake_dir)
+        return build_path(self.root_directory, path, self.last_path,
+                          self.fake_root)
 
 
 class IncludeStack(object):
@@ -93,6 +96,9 @@ class DefaultStack(IncludeStack):
     def peek_stack(self):
         return self.stack[-1]
 
+    def __repr__(self):
+        return "<DefaultStack stack={self.stack!r}>".format(self=self)
+
 
 class IncludeHandler(object):
     """
@@ -100,27 +106,23 @@ class IncludeHandler(object):
     the grammar against the content of a new file.
     """
 
-    @classmethod
-    def default_file_reader(cls, path):
-        with open(path) as f:
-            return f.read()
-
     def __init__(self,
+                 root_directory,
                  path,
                  parser,
-                 fake_dir=None,
+                 fake_root=None,
                  file_reader=None,
                  stack=None):
 
-        self.root = os.path.dirname(path)
+        self.root_directory = os.path.abspath(root_directory)
 
-        if fake_dir is None:
-            fake_dir = os.getcwd()
+        if fake_root is None:
+            fake_root = os.getcwd()
 
-        if file_reader is not None:
-            self.file_reader = file_reader
+        if file_reader is None:
+            self.file_reader = default_file_reader
         else:
-            self.file_reader = self.default_file_reader
+            self.file_reader = file_reader
 
         if stack is None:
             self.stack = DefaultStack()
@@ -133,17 +135,17 @@ class IncludeHandler(object):
         self.stack.push_stack(path)
 
         # the simulated current working directory
-        self.fake_dir = fake_dir
+        self.fake_root = fake_root
 
         self.parser = parser
 
     def build_path(self, path):
         last_path = self.stack.peek_stack()
-        root = self.root
-        fake_dir = self.fake_dir
-        return build_path(path, last_path, root, fake_dir)
+        root_directory = self.root_directory
+        fake_root = self.fake_root
+        return build_path(root_directory, path, last_path, fake_root)
 
-    def call_include(self, path):
+    def _include(self, path):
         path = self.build_path(path)
 
         # signal stack change to stack component.
@@ -154,13 +156,12 @@ class IncludeHandler(object):
         if cached_value is not None:
             return cached_value
 
-        file_contents = self.file_reader(path)
-
         try:
-            result = self.parser.parseString(file_contents, parseAll=True)
+            with self.file_reader(self.root_directory, path) as f:
+                result = self.parser.parse_file(f)
         except:
             logging.error("could not parse: {0}".format(path),
-                    exc_info=sys.exc_info())
+                          exc_info=sys.exc_info())
             raise
 
         self.result_cache[path] = result
@@ -169,16 +170,29 @@ class IncludeHandler(object):
 
         return result
 
-    def __call__(self, s, l, t):
+    def include(self, path):
+        """
+        External interface to actually including a path.
+        """
+
+        last_path = self.stack.peek_stack()
+
         try:
-            return self.call_include(t[0])
+            return self._include(path)
         except:
-            log.error("error during include", exc_info=sys.exc_info())
+            log.error("{0}: error during include".format(last_path),
+                      exc_info=sys.exc_info())
             raise
 
-    def mark(self, s, l, t):
+    def __call__(self, path):
+        return self.include(path)
+
+    def pyparsing_call(self, s, l, t):
+        return self.include(t[0])
+
+    def pyparsing_mark(self, s, l, t):
         last_path = self.stack.peek_stack()
-        state = IncludeState(last_path, self.root, self.fake_dir)
+        state = IncludeState(self.root_directory, last_path, self.fake_root)
         return tuple([state] + list(t))
 
 

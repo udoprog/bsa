@@ -6,6 +6,7 @@ import hashlib
 
 try:
     import cPickle as pickle
+    assert pickle
 except ImportError:
     import pickle
 
@@ -185,7 +186,8 @@ class BindConfig(object):
         with open(cache_path, "w") as f:
             return pickle.dump(ast, f)
 
-    def parse_zones(self, fake_dir=None, reporter=None):
+    def parse_zones(self, root_directory, fake_root=None, file_reader=None,
+                    reporter=None):
         """
         Parse all available zones.
 
@@ -199,8 +201,10 @@ class BindConfig(object):
            future runs.
         """
 
-        if fake_dir is None:
-            fake_dir = os.getcwd()
+        root_directory = os.path.abspath(root_directory)
+
+        if fake_root is None:
+            fake_root = os.getcwd()
 
         cache = dict()
 
@@ -221,7 +225,12 @@ class BindConfig(object):
             ast = self.get_cached(zone)
 
             if ast is None:
-                ast = parse_zone(zone.file, zone.origin, fake_dir=fake_dir)
+                ast = parse_zone(
+                    zone.file, zone.origin,
+                    fake_root=fake_root,
+                    root_directory=root_directory,
+                    file_reader=file_reader)
+
                 self.put_cache(zone, ast)
 
             cache[key] = (ast, [config])
@@ -273,7 +282,7 @@ class BindView(BindConfig):
         return "<BindView name={self.name}>".format(self=self)
 
 
-def build_parser(path, fake_dir=os.getcwd(), file_reader=None):
+def build_parser(root_directory, path, fake_root=os.getcwd(), file_reader=None):
     from pyparsing import nestedExpr
     from pyparsing import QuotedString
     from pyparsing import Group
@@ -291,22 +300,23 @@ def build_parser(path, fake_dir=os.getcwd(), file_reader=None):
     root = Forward()
 
     include_handler = IncludeHandler(
+        root_directory,
         path,
         root,
-        fake_dir=fake_dir,
+        fake_root=fake_root,
         file_reader=file_reader)
 
     # relaxed grammar
     identifier = Word(alphanums + "-_.:/")
 
     comment = ("//" + restOfLine).suppress() \
-            | ("#" + restOfLine).suppress() \
-            | cStyleComment
+        | ("#" + restOfLine).suppress() \
+        | cStyleComment
 
     endstmt = Literal(";").suppress()
 
     argument = QuotedString('"') \
-             | identifier
+        | identifier
 
     arguments = ZeroOrMore(argument)
 
@@ -318,8 +328,8 @@ def build_parser(path, fake_dir=os.getcwd(), file_reader=None):
 
     regular = identifier + Group(arguments) + Optional(section, default=[])
 
-    statement = include.setParseAction(include_handler) \
-              | regular.setParseAction(include_handler.mark)
+    statement = include.setParseAction(include_handler.pyparsing_call) \
+        | regular.setParseAction(include_handler.pyparsing_mark)
 
     statements << OneOrMore(statement + endstmt)
 
@@ -327,11 +337,24 @@ def build_parser(path, fake_dir=os.getcwd(), file_reader=None):
 
     root.ignore(comment)
 
+    setattr(
+        root, 'parse_file',
+        lambda f, root=root: root.parseFile(f, parseAll=True))
+
     return root
 
 
-def parse_config(path, fake_dir=None):
-    if fake_dir is None:
-        fake_dir = os.getcwd()
-    parser = build_parser(path, fake_dir)
+def parse_config(path, fake_root=None, root_directory=None, file_reader=None):
+    if fake_root is None:
+        fake_root = os.getcwd()
+
+    if root_directory is None:
+        root_directory = os.path.dirname(path)
+    else:
+        root_directory = os.path.abspath(root_directory)
+
+    parser = build_parser(
+        root_directory, path, fake_root,
+        file_reader=file_reader)
+
     return parser.parseFile(path, parseAll=True)
