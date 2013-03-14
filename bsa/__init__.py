@@ -7,7 +7,7 @@ import argparse
 from bsa.named import parse_config
 from bsa.named import BindConfig
 
-LOGGING_FORMAT = "%(levelname)-7s %(asctime)s %(name)20s %(message)s"
+LOGGING_FORMAT = "%(levelname)-7s %(asctime)s [%(name)20s] %(message)s"
 
 __version__ = '0.2.0'
 
@@ -83,10 +83,12 @@ class DefaultBootstrap(object):
         mod = self.get_refresh_module(module)
 
         reporter = self.reporter_type(name=module)
-        mod.run(self.db, reporter)
+        result = mod.run(self.db, reporter)
 
         if not no_report:
             reporter.print_all()
+
+        return result
 
 
 def run_interactive(zones):
@@ -144,17 +146,28 @@ def run_interactive(zones):
 def run_modules(zones, modules):
     import bsa.bind
 
+    log = logging.getLogger("modules")
+
     try:
         b = bsa.bind.FakeBind(zones)
     except:
-        logging.error("FakeBind setup failed", exc_info=sys.exc_info())
+        log.error("FakeBind setup failed", exc_info=sys.exc_info())
         return 1
 
     bootstrap = DefaultBootstrap(b)
 
+    result = list()
+
     for m in modules:
-        logging.info("[running module: {0}]".format(m))
-        bootstrap.execute(m)
+        log.info("[running module: {0}]".format(m))
+        result.append(bootstrap.execute(m))
+
+    if not all(result):
+        log.error("All test suites did not pass!")
+        return 1
+
+    log.info("All test suites passed!")
+    return 0
 
 
 @contextlib.contextmanager

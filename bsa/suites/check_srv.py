@@ -12,6 +12,8 @@ def run(db, reporter):
 
     checked_zones = set(generate_soa_domains(db))
 
+    all_ok = True
+
     for rr in generate_records(db, 'SRV'):
         if not domain_in(rr.resolved_label, checked_zones):
             continue
@@ -24,6 +26,10 @@ def run(db, reporter):
         if db.query(lookup, record=['A', 'NS', 'CNAME']):
             continue
 
+        all_ok = False
+
         reporter.error(
             "Missing target [A, NS, CNAME]: {0}: ({1})".format(
                 lookup, repr(rr)))
+
+    return all_ok

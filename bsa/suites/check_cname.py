@@ -10,6 +10,8 @@ def run(db, reporter):
     Decide which domains to check depending on available SOA records.
     """
 
+    all_ok = True
+
     checked_zones = set(generate_soa_domains(db))
 
     for rr in generate_records(db, 'CNAME'):
@@ -21,6 +23,9 @@ def run(db, reporter):
         if db.query(lookup, record=['A', 'NS', 'CNAME', 'PTR']):
             continue
 
+        all_ok = False
         reporter.error(
             "Missing target [A, NS, CNAME, PTR]: {0} ({1})".format(
                 lookup, repr(rr)))
+
+    return all_ok

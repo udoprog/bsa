@@ -13,6 +13,8 @@ def run(db, reporter):
 
     checked_zones = set(generate_soa_domains(db))
 
+    all_ok = True
+
     for rr in generate_records(db, 'A'):
         if not domain_in(rr.resolved_label, checked_zones):
             continue
@@ -22,6 +24,10 @@ def run(db, reporter):
         if db.query(lookup, record=['PTR', 'CNAME']):
             continue
 
+        all_ok = False
+
         reporter.error(
             "Missing reverse [PTR, CNAME]: {0} ({1})".format(
                 lookup, repr(rr)))
+
+    return all_ok
